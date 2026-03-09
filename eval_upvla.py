@@ -7,9 +7,9 @@ calvin 컨테이너에서 실행:
 # 통합 테스트 (debug dataset)
 docker compose run --rm calvin python /temporal_vla/src/benchmarks/calvin/eval_upvla.py \
   --dataset-path /temporal_vla/src/benchmarks/calvin/dataset/calvin_debug_dataset \
-  --num-sequences 10 \
+  --num-sequences 1 \
   --video-dir /temporal_vla/src/benchmarks/calvin/dataset/calvin_debug_dataset/video \
-  --num-videos 10
+  --num-videos 1
 
 # 실제 평가 (full dataset)
 docker compose run --rm calvin python /temporal_vla/src/benchmarks/calvin/eval_upvla.py \
@@ -490,6 +490,38 @@ def _decode_b64png(b64_str: str) -> np.ndarray:
     return np.array(Image.open(io.BytesIO(base64.b64decode(b64_str))).convert("RGB"))
 
 
+def _draw_border(frames: List[np.ndarray], success: bool, border: int = 3, repeat: int = 5) -> List[np.ndarray]:
+    """원본 draw_outcome()과 동일: 마지막 프레임에만 테두리를 그리고 repeat번 반복해서 붙인다.
+    성공=초록(0,255,0), 실패=빨강(255,0,0).
+    """
+    color = (0, 255, 0) if success else (255, 0, 0)
+    last = frames[-1].copy()
+    last[:border, :] = color   # top
+    last[-border:, :] = color  # bottom
+    last[:, :border] = color   # left
+    last[:, -border:] = color  # right
+    return frames + [last] * repeat
+
+
+def _draw_instruction(frames: List[np.ndarray], text: str) -> List[np.ndarray]:
+    """원본 add_text() (utils.py L160)와 동일하게 instruction 텍스트를 프레임에 오버레이한다.
+    cv2.putText 두 번: 검정 두꺼운 외곽선 → 흰 텍스트 (stroke 효과).
+    위치: 좌하단 (1, height-10), 폰트 크기: 너비 기준 비례.
+    """
+    import cv2
+
+    result = []
+    for f in frames:
+        img = f.copy()
+        h, w = img.shape[:2]
+        coord = (1, int(h - 10))
+        font_scale = (0.7 / 500) * w
+        cv2.putText(img, text, coord, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(img, text, coord, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        result.append(img)
+    return result
+
+
 def _save_video(frames: List[np.ndarray], path: Path, fps: int = 20):
     """프레임 리스트 → MP4 저장. imageio 없으면 GIF로 fallback."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -567,20 +599,29 @@ def _setup_egl(cuda_id: int = 0):
 
 
 def _get_raw_image(obs: Dict, key: str) -> np.ndarray:
-    """Calvin raw obs에서 uint8 HxWx3 이미지 추출."""
+    """Calvin raw obs에서 uint8 HxWx3 이미지 추출.
+
+    Calvin env는 rgb_obs를 [-1, 1] 범위의 CHW tensor로 반환한다.
+    원본(calvin_evaluate_upvla.py L233-237)과 동일하게 (img+1)/2*255 변환을 적용한다.
+    """
     img = obs["rgb_obs"][key]
-    if hasattr(img, "numpy"):  # tensor인 경우 (혹시 모를 래퍼)
-        img = img.numpy()
+    if hasattr(img, "numpy"):  # tensor인 경우
+        img = img.squeeze().permute(1, 2, 0).cpu().numpy()  # CHW → HWC
     if img.dtype != np.uint8:
-        img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+        # [-1, 1] → [0, 255] (원본과 동일한 변환)
+        img = ((np.clip(img, -1.0, 1.0) + 1.0) / 2.0 * 255.0).astype(np.uint8)
     return img
 
 
 def _step_env(env, action_7d: np.ndarray):
-    """7D 연속 action → Calvin env.step() 형식으로 변환 후 실행."""
-    parts = np.split(action_7d, [3, 6])  # [xyz(3), rpy(3), gripper(1)]
-    parts[-1] = 1 if parts[-1][0] > 0 else -1  # 그리퍼를 {-1, 1}로 이산화
-    return env.step(parts)  # (obs, reward, done, info)
+    """7D 연속 action → Calvin env.step() 실행.
+
+    Calvin robot.py는 gripper_action in (-1, 1)을 강제 assert한다.
+    7D array 형태는 유지하되 gripper(마지막 요소)만 이산화한다.
+    """
+    action = action_7d.copy()
+    action[-1] = 1.0 if action[-1] > 0 else -1.0
+    return env.step(action)  # (obs, reward, done, info)
 
 
 # ─── 평가 루프 ───────────────────────────────────────────────────────────────
@@ -668,7 +709,9 @@ def _evaluate_sequence(
             seq_idx=seq_idx,
             subtask_idx=subtask_idx,
         )
-        if record:
+        if record and frames:
+            frames = _draw_instruction(frames, instruction)
+            frames = _draw_border(frames, success)
             all_frames.extend(frames)
         if success:
             success_counter += 1
@@ -676,7 +719,7 @@ def _evaluate_sequence(
             break
 
     # MP4 저장: 기록 대상이고 완전 성공(5/5)이 아닌 경우
-    if record and video_dir is not None and all_frames and success_counter < 4:
+    if record and video_dir is not None and all_frames:  #  and success_counter < 4 # 성공 여하 상관없이 저장하려면 주석
         mp4_path = video_dir / "seq{:04d}_result{}.mp4".format(seq_idx, success_counter)
         _save_video(all_frames, mp4_path)
 
