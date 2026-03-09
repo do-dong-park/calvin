@@ -73,23 +73,26 @@ def _get_env_state_for_initial_condition(
     initial_condition: Dict,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """초기 조건 dict → (robot_obs, scene_obs) numpy 배열."""
+    # Calvin 로봇의 기본 홈 자세 (policy_evaluation/utils.py에서 복사).
+    # 15개 값: [EE xyz(3)] [EE euler rpy(3)] [gripper_width(1)] [joint_angles(7)] [gripper_action(1)]
+    # Calvin 평가 프로토콜의 고정 상수 — 변경하면 타 논문과 결과를 비교할 수 없다.
     robot_obs = np.array(
         [
-            0.02586889,
-            -0.2313129,
-            0.5712808,
-            3.09045411,
-            -0.02908596,
-            1.50013585,
-            0.07999963,
-            -1.21779124,
-            1.03987629,
-            2.11978254,
-            -2.34205014,
-            -0.87015899,
-            1.64119093,
-            0.55344928,
-            1.0,
+            0.02586889,   # EE x
+            -0.2313129,   # EE y
+            0.5712808,    # EE z
+            3.09045411,   # EE roll
+            -0.02908596,  # EE pitch
+            1.50013585,   # EE yaw
+            0.07999963,   # gripper width
+            -1.21779124,  # joint 0
+            1.03987629,   # joint 1
+            2.11978254,   # joint 2
+            -2.34205014,  # joint 3
+            -0.87015899,  # joint 4
+            1.64119093,   # joint 5
+            0.55344928,   # joint 6
+            1.0,          # gripper action (1=open)
         ]
     )
     block_rot_z_range = (np.pi / 2 - np.pi / 8, np.pi / 2 + np.pi / 8)
@@ -153,6 +156,10 @@ def _count_success(results: List[int]) -> List[float]:
 
 # ─── 인라인 유틸: policy_evaluation/multistep_sequences.py ───────────────────
 
+# 태스크 카테고리 번호 (같은 숫자 = 같은 카테고리).
+# 5-subtask 시퀀스를 구성할 때 동일 카테고리 태스크가 두 번 나오면 _check_sequence에서 거부된다.
+# 예: rotate_red/blue/pink_block_* 은 모두 1번 → 시퀀스 내 회전 태스크는 1개만 허용.
+# 이 제약으로 다양한 물체/동작을 고루 포함한 시퀀스만 평가에 사용된다.
 _TASK_CATEGORIES = {
     "rotate_red_block_right": 1,
     "rotate_red_block_left": 1,
@@ -421,12 +428,19 @@ def _valid_task(state: Dict, task: List[Dict]) -> List[Dict]:
 
 
 def _check_sequence(state: Dict, seq: List[str]) -> bool:
+    """주어진 초기 상태에서 seq의 5개 태스크가 순서대로 실행 가능한지 검증.
+
+    두 가지 조건을 모두 만족해야 True:
+      1. 각 태스크의 선행 조건(condition)이 이전 태스크 완료 후 상태와 일치 (물리적 실행 가능성)
+      2. 시퀀스 내 모든 태스크의 카테고리가 서로 다름 (_TASK_CATEGORIES 중복 금지)
+    """
     for task_name in seq:
         states = _valid_task(state, _TASKS[task_name])
         if len(states) != 1:
             return False
         state = states[0]
     categories = [_TASK_CATEGORIES[name] for name in seq]
+    # 카테고리 중복 금지: 5개 카테고리가 모두 달라야 다양한 태스크 시퀀스가 됨
     return len(categories) == len(set(categories))
 
 
@@ -454,6 +468,9 @@ def _get_sequences(num_sequences: int = 1000) -> List[Tuple]:
         "pink_block": ["table", "slider_right", "slider_left"],
         "grasped": [0],
     }
+    # 물리적으로 유효한 초기 상태만 필터링:
+    #   - 블록이 테이블에 1~2개만 있어야 함 (0개면 모든 블록이 슬라이더 → 비현실적)
+    #   - slider_right, slider_left에 각각 1개 이하 (슬라이더 한 칸에 블록 2개는 불가)
     f = lambda l: l.count("table") in [1, 2] and l.count("slider_right") < 2 and l.count("slider_left") < 2
     value_combinations = filter(f, product(*possible_conditions.values()))
     initial_states = [dict(zip(possible_conditions.keys(), vals)) for vals in value_combinations]
@@ -496,9 +513,9 @@ def _draw_border(frames: List[np.ndarray], success: bool, border: int = 3, repea
     """
     color = (0, 255, 0) if success else (255, 0, 0)
     last = frames[-1].copy()
-    last[:border, :] = color   # top
+    last[:border, :] = color  # top
     last[-border:, :] = color  # bottom
-    last[:, :border] = color   # left
+    last[:, :border] = color  # left
     last[:, -border:] = color  # right
     return frames + [last] * repeat
 
