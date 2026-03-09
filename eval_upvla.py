@@ -78,21 +78,21 @@ def _get_env_state_for_initial_condition(
     # Calvin 평가 프로토콜의 고정 상수 — 변경하면 타 논문과 결과를 비교할 수 없다.
     robot_obs = np.array(
         [
-            0.02586889,   # EE x
-            -0.2313129,   # EE y
-            0.5712808,    # EE z
-            3.09045411,   # EE roll
+            0.02586889,  # EE x
+            -0.2313129,  # EE y
+            0.5712808,  # EE z
+            3.09045411,  # EE roll
             -0.02908596,  # EE pitch
-            1.50013585,   # EE yaw
-            0.07999963,   # gripper width
+            1.50013585,  # EE yaw
+            0.07999963,  # gripper width
             -1.21779124,  # joint 0
-            1.03987629,   # joint 1
-            2.11978254,   # joint 2
+            1.03987629,  # joint 1
+            2.11978254,  # joint 2
             -2.34205014,  # joint 3
             -0.87015899,  # joint 4
-            1.64119093,   # joint 5
-            0.55344928,   # joint 6
-            1.0,          # gripper action (1=open)
+            1.64119093,  # joint 5
+            0.55344928,  # joint 6
+            1.0,  # gripper action (1=open)
         ]
     )
     block_rot_z_range = (np.pi / 2 - np.pi / 8, np.pi / 2 + np.pi / 8)
